@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react";
+import { trackEvent } from "../analytics/pendo";
 import { sendAssistantMessage, type ChatMessage } from "../api/assistant";
+import { ApiError } from "../api/client";
 
 const SUGGESTED_PROMPTS = [
   "Suggest a 3-day itinerary for my next trip",
@@ -23,7 +25,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const send = async (text: string) => {
+  const send = async (text: string, usedSuggestedPrompt = false) => {
     const prompt = text.trim();
     if (prompt === "" || thinking) return;
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: prompt };
@@ -32,10 +34,28 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
     setDraft("");
     setError(null);
     setThinking(true);
+    const startedAt = performance.now();
     try {
       const reply = await sendAssistantMessage(conversationId, conversation);
+      // The assistant answered the prompt.
+      trackEvent("assistant_reply_received", {
+        conversationId,
+        messageCount: conversation.length + 1,
+        promptLength: prompt.length,
+        replyLength: reply.message.content.length,
+        usedSuggestedPrompt,
+        responseTimeMs: Math.round(performance.now() - startedAt),
+      });
       setMessages((current) => [...current, reply.message]);
     } catch (e) {
+      // The request to the assistant failed. errorStatus is 0 when the API didn't answer.
+      trackEvent("assistant_reply_failed", {
+        conversationId,
+        messageCount: conversation.length,
+        errorStatus: e instanceof ApiError ? e.status : 0,
+        usedSuggestedPrompt,
+        responseTimeMs: Math.round(performance.now() - startedAt),
+      });
       setError((e as Error).message);
     } finally {
       setThinking(false);
@@ -73,7 +93,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
             Ask me anything about planning a trip.
             <div className="suggestions">
               {SUGGESTED_PROMPTS.map((prompt) => (
-                <button key={prompt} type="button" className="secondary" onClick={() => void send(prompt)}>
+                <button key={prompt} type="button" className="secondary" onClick={() => void send(prompt, true)}>
                   {prompt}
                 </button>
               ))}
